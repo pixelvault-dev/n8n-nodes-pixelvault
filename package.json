@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-pixelvault",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "n8n node to host an image on PixelVault and get a public CDN URL",
   "license": "MIT",
   "homepage": "https://pixelvault.dev/integrations/n8n/",
@@ -52,5 +52,8 @@
   },
   "peerDependencies": {
     "n8n-workflow": "*"
+  },
+  "publishConfig": {
+    "access": "public"
   }
 }
