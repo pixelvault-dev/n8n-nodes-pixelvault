@@ -1,6 +1,6 @@
 {
   "name": "n8n-nodes-pixelvault",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "n8n node to host an image on PixelVault and get a public CDN URL",
   "license": "MIT",
   "homepage": "https://pixelvault.dev/integrations/n8n/",
@@ -28,7 +28,8 @@
     "lint": "n8n-node lint",
     "lint:fix": "n8n-node lint --fix",
     "release": "n8n-node release",
-    "prepublishOnly": "n8n-node prerelease"
+    "prepublishOnly": "n8n-node prerelease",
+    "test": "npm run build && node --test test/pixelvault.node.test.js"
   },
   "files": [
     "dist"
@@ -55,5 +56,11 @@
   },
   "publishConfig": {
     "access": "public"
+  },
+  "bugs": {
+    "url": "https://github.com/pixelvault-dev/n8n-nodes-pixelvault/issues"
+  },
+  "engines": {
+    "node": ">=20.15"
   }
 }
