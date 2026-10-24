@@ -4,7 +4,7 @@
 // n8n execution context, so they need no extra dependencies.
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { NodeApiError } = require('n8n-workflow');
+const { NodeApiError, NodeOperationError } = require('n8n-workflow');
 
 const { PixelVault } = require('../dist/nodes/PixelVault/PixelVault.node.js');
 const { PixelVaultApi } = require('../dist/credentials/PixelVaultApi.credentials.js');
@@ -161,4 +161,69 @@ test('package metadata registers the node and credential', () => {
 	assert.equal(pkg.license, 'MIT');
 	assert.equal(pkg.publishConfig.access, 'public');
 	assert.equal(pkg.dependencies, undefined, 'verified nodes cannot have runtime dependencies');
+});
+
+const uploadCtx = (options, extra = {}) =>
+	makeContext({
+		params: { operation: 'upload', binaryPropertyName: 'data', options },
+		response: { data: { url: 'u' } },
+		...extra,
+	});
+const importCtx = (options, extra = {}) =>
+	makeContext({
+		params: { operation: 'importUrl', imageUrl: 'https://example.com/a.jpg', options },
+		response: { data: { url: 'u' } },
+		...extra,
+	});
+
+for (const seconds of [60, 3600, 2592000]) {
+	test(`expires_in ${seconds} is sent by both operations`, async () => {
+		const up = uploadCtx({ expiresIn: seconds });
+		await run(up);
+		assert.match(
+			up.calls[0].options.body.toString('latin1'),
+			new RegExp(`name="expires_in"\\r\\n\\r\\n${seconds}\\r\\n`),
+		);
+
+		const imp = importCtx({ expiresIn: seconds });
+		await run(imp);
+		assert.strictEqual(imp.calls[0].options.body.expires_in, seconds);
+	});
+}
+
+for (const empty of [0, '', undefined]) {
+	test(`expires_in ${JSON.stringify(empty)} keeps the image permanent`, async () => {
+		const up = uploadCtx({ expiresIn: empty });
+		await run(up);
+		assert.doesNotMatch(up.calls[0].options.body.toString('latin1'), /expires_in/);
+
+		const imp = importCtx({ expiresIn: empty });
+		await run(imp);
+		assert.ok(!('expires_in' in imp.calls[0].options.body));
+	});
+}
+
+for (const bad of [30, 59, 2592001, 99999999, -60, 90.5, NaN, 'soon']) {
+	for (const [name, make] of [
+		['upload', uploadCtx],
+		['import', importCtx],
+	]) {
+		test(`${name} rejects expiresIn ${bad} before any request`, async () => {
+			const ctx = make({ expiresIn: bad });
+			await assert.rejects(
+				run(ctx),
+				(err) =>
+					err instanceof NodeOperationError &&
+					/Expires In must be 0.*between 60 and 2592000/.test(err.message),
+			);
+			assert.equal(ctx.calls.length, 0, 'no HTTP request was made');
+		});
+	}
+}
+
+test('an invalid expiresIn with continue on fail returns an error item', async () => {
+	const ctx = importCtx({ expiresIn: 30 }, { continueOnFail: true });
+	const [[item]] = await run(ctx);
+	assert.match(item.json.error, /Expires In must be 0/);
+	assert.equal(ctx.calls.length, 0);
 });

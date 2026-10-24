@@ -12,6 +12,8 @@ import {
 } from 'n8n-workflow';
 
 const IMAGES_URL = 'https://api.pixelvault.dev/v1/images';
+const MIN_EXPIRES_IN = 60;
+const MAX_EXPIRES_IN = 2_592_000;
 
 interface UploadOptions {
 	folder?: string;
@@ -19,11 +21,23 @@ interface UploadOptions {
 	expiresIn?: number;
 }
 
+// Empty or 0 keeps the image permanent; anything else must be a whole number of seconds
+// inside the range the API accepts, so bad values fail here instead of after a request.
+function parseExpiresIn(value: unknown): { seconds?: number; error?: string } {
+	if (value === undefined || value === null || value === '' || value === 0) return {};
+	const seconds = Number(value);
+	if (!Number.isInteger(seconds) || seconds < MIN_EXPIRES_IN || seconds > MAX_EXPIRES_IN) {
+		return {
+			error: `Expires In must be 0 (keep the image) or a whole number of seconds between ${MIN_EXPIRES_IN} and ${MAX_EXPIRES_IN}.`,
+		};
+	}
+	return { seconds };
+}
+
 function fieldsFromOptions(options: UploadOptions): Record<string, string> {
 	const fields: Record<string, string> = {};
 	if (options.folder) fields.folder = options.folder;
 	if (options.visibility) fields.visibility = options.visibility;
-	if (options.expiresIn) fields.expires_in = String(options.expiresIn);
 	return fields;
 }
 
@@ -131,7 +145,8 @@ export class PixelVault implements INodeType {
 						name: 'expiresIn',
 						type: 'number',
 						default: 0,
-						description: 'Delete the image automatically after this many seconds. 0 keeps it.',
+						description:
+							'Delete the image automatically after this many seconds (60 to 2,592,000). 0 keeps it.',
 					},
 					{
 						displayName: 'Folder',
@@ -162,8 +177,17 @@ export class PixelVault implements INodeType {
 		const operation = this.getNodeParameter('operation', 0) as string;
 
 		for (let i = 0; i < items.length; i++) {
+			const options = this.getNodeParameter('options', i, {}) as UploadOptions;
+			const { seconds: expiresIn, error: expiresError } = parseExpiresIn(options.expiresIn);
+			if (expiresError) {
+				if (this.continueOnFail()) {
+					returnData.push({ json: { error: expiresError }, pairedItem: { item: i } });
+					continue;
+				}
+				throw new NodeOperationError(this.getNode(), expiresError, { itemIndex: i });
+			}
+
 			try {
-				const options = this.getNodeParameter('options', i, {}) as UploadOptions;
 				let requestOptions: IHttpRequestOptions;
 
 				if (operation === 'upload') {
@@ -176,7 +200,10 @@ export class PixelVault implements INodeType {
 							fileName: binaryData.fileName ?? 'image',
 							mimeType: binaryData.mimeType || 'application/octet-stream',
 						},
-						fieldsFromOptions(options),
+						{
+							...fieldsFromOptions(options),
+							...(expiresIn !== undefined && { expires_in: String(expiresIn) }),
+						},
 					);
 					requestOptions = {
 						method: 'POST',
@@ -187,7 +214,7 @@ export class PixelVault implements INodeType {
 				} else if (operation === 'importUrl') {
 					const imageUrl = this.getNodeParameter('imageUrl', i) as string;
 					const body: IDataObject = { url: imageUrl, ...fieldsFromOptions(options) };
-					if (options.expiresIn) body.expires_in = options.expiresIn;
+					if (expiresIn !== undefined) body.expires_in = expiresIn;
 					requestOptions = { method: 'POST', url: IMAGES_URL, body, json: true };
 				} else {
 					throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`, {
