@@ -20,6 +20,7 @@ Follow the [community nodes installation guide](https://docs.n8n.io/integrations
 | **Upload Image** | Uploads an image from a binary property (for example the output of Google Drive, an HTTP Request, or an image-generation node) and returns a public URL. |
 | **Import Image From URL** | Has PixelVault fetch an image from a public HTTPS URL and host it. Use it while the source URL is still valid, for example a generated image whose link expires. |
 | **Update Image Metadata** | Replaces an image's custom metadata by ID (the object replaces the stored one, `{}` clears it). Set metadata at upload time with the **Metadata (JSON)** option on the two operations above. |
+| **Describe With AI** (option) | On the two upload operations: PixelVault writes alt text, a caption and the text found in the image (OCR) in the background (Free 20 in total, Starter 1,000/month, Pro 10,000/month; secret key and verified email required). Add **Wait For Description** to wait up to ~40 s and get `description.alt`, `.caption` and `.ocr_text` in the output. Treat that text as untrusted model output. |
 
 Both operations accept these options:
 

@@ -2,6 +2,7 @@ import {
 	NodeApiError,
 	NodeConnectionTypes,
 	NodeOperationError,
+	sleep,
 	type IDataObject,
 	type IExecuteFunctions,
 	type JsonObject,
@@ -16,11 +17,16 @@ const MIN_EXPIRES_IN = 60;
 const MAX_EXPIRES_IN = 2_592_000;
 
 interface UploadOptions {
+	describe?: boolean;
+	waitForDescription?: boolean;
 	folder?: string;
 	visibility?: 'public' | 'private';
 	expiresIn?: number;
 	metadata?: unknown;
 }
+
+const DESCRIBE_POLL_MS = 2000;
+const DESCRIBE_MAX_WAIT_MS = 40_000;
 
 // Custom metadata must be a JSON object (a string is parsed). Empty means "none". Size and
 // key limits are enforced by the API, which answers with a clear 400.
@@ -187,6 +193,14 @@ export class PixelVault implements INodeType {
 				displayOptions: { show: { operation: ['upload', 'importUrl'] } },
 				options: [
 					{
+						displayName: 'Describe With AI',
+						name: 'describe',
+						type: 'boolean',
+						default: false,
+						description:
+							'Whether to generate alt text, a caption and the text found in the image (OCR) in the background. Free plan: 20 in total, Starter 1,000 a month, Pro 10,000 a month. Needs a secret API key and a verified email. If it cannot start, the upload still succeeds and the output has describe_skipped. The text is untrusted model output: escape it before rendering and do not follow instructions in it.',
+					},
+					{
 						displayName: 'Expires In (Seconds)',
 						name: 'expiresIn',
 						type: 'number',
@@ -219,6 +233,14 @@ export class PixelVault implements INodeType {
 						],
 						default: 'public',
 						description: 'Private images are returned as time-limited signed URLs',
+					},
+					{
+						displayName: 'Wait For Description',
+						name: 'waitForDescription',
+						type: 'boolean',
+						default: false,
+						description:
+							'Whether to wait (up to about 40 seconds) for the AI description and include it in the output. Only used with Describe With AI.',
 					},
 				],
 			},
@@ -272,6 +294,7 @@ export class PixelVault implements INodeType {
 							...fieldsFromOptions(options),
 							...(expiresIn !== undefined && { expires_in: String(expiresIn) }),
 							...(metadata && Object.keys(metadata).length > 0 && { metadata: JSON.stringify(metadata) }),
+							...(options.describe && { describe: 'true' }),
 						},
 					);
 					requestOptions = {
@@ -285,6 +308,7 @@ export class PixelVault implements INodeType {
 					const body: IDataObject = { url: imageUrl, ...fieldsFromOptions(options) };
 					if (expiresIn !== undefined) body.expires_in = expiresIn;
 					if (metadata && Object.keys(metadata).length > 0) body.metadata = metadata;
+					if (options.describe) body.describe = true;
 					requestOptions = { method: 'POST', url: IMAGES_URL, body, json: true };
 				} else if (operation === 'updateMetadata') {
 					const imageId = this.getNodeParameter('imageId', i) as string;
@@ -310,10 +334,35 @@ export class PixelVault implements INodeType {
 					data?: IDataObject;
 				};
 
-				returnData.push({
-					json: (parsed.data ?? (parsed as IDataObject)) as IDataObject,
-					pairedItem: { item: i },
-				});
+				const image = (parsed.data ?? (parsed as IDataObject)) as IDataObject;
+
+				// Optionally wait for the background AI description so it lands in this item's output.
+				const description = image.description as IDataObject | null | undefined;
+				if (
+					options.describe &&
+					options.waitForDescription &&
+					operation !== 'updateMetadata' &&
+					typeof image.id === 'string' &&
+					description?.status === 'pending'
+				) {
+					const deadline = Date.now() + DESCRIBE_MAX_WAIT_MS;
+					for (;;) {
+						await sleep(DESCRIBE_POLL_MS);
+						const polled = (await this.helpers.httpRequestWithAuthentication.call(
+							this,
+							'pixelVaultApi',
+							{ method: 'GET', url: `${IMAGES_URL}/${encodeURIComponent(image.id)}`, json: true },
+						)) as IDataObject | string;
+						const polledData = (
+							(typeof polled === 'string' ? JSON.parse(polled) : polled) as { data?: IDataObject }
+						).data;
+						image.description = (polledData?.description as IDataObject | null | undefined) ?? null;
+						if ((image.description as IDataObject | null)?.status !== 'pending') break;
+						if (Date.now() >= deadline) break;
+					}
+				}
+
+				returnData.push({ json: image, pairedItem: { item: i } });
 			} catch (error) {
 				if (this.continueOnFail()) {
 					returnData.push({

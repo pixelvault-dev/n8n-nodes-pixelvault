@@ -297,3 +297,68 @@ test('update metadata PATCHes the image with the object, {} to clear', async () 
 	await run(clear);
 	assert.deepEqual(clear.calls[0].options.body, { metadata: {} });
 });
+
+test('describe sends describe=true on upload (multipart) and import (JSON), only when set', async () => {
+	const up = makeContext({
+		params: { operation: 'upload', binaryPropertyName: 'data', options: { describe: true } },
+		response: { data: { id: 'img_1', description: { status: 'pending' } } },
+	});
+	const [[upItem]] = await run(up);
+	assert.match(up.calls[0].options.body.toString('latin1'), /name="describe"\r\n\r\ntrue\r\n/);
+	assert.deepEqual(upItem.json.description, { status: 'pending' }, 'no wait: returns the pending description');
+	assert.equal(up.calls.length, 1, 'no polling without Wait For Description');
+
+	const off = makeContext({
+		params: { operation: 'upload', binaryPropertyName: 'data', options: {} },
+		response: { data: { id: 'img_1' } },
+	});
+	await run(off);
+	assert.doesNotMatch(off.calls[0].options.body.toString('latin1'), /name="describe"/);
+
+	const imp = makeContext({
+		params: { operation: 'importUrl', imageUrl: 'https://example.com/a.png', options: { describe: true } },
+		response: { data: { id: 'img_2', description: { status: 'pending' } } },
+	});
+	await run(imp);
+	assert.equal(imp.calls[0].options.body.describe, true);
+});
+
+test('wait for description polls the image until it is done and puts it in the output', async () => {
+	const ctx = makeContext({
+		params: {
+			operation: 'upload',
+			binaryPropertyName: 'data',
+			options: { describe: true, waitForDescription: true },
+		},
+		response: { data: { id: 'img_1', description: { status: 'pending' } } },
+	});
+	// First call is the upload; later calls are the GET polls.
+	let n = 0;
+	ctx.helpers.httpRequestWithAuthentication = async function (credentialName, options) {
+		ctx.calls.push({ credentialName, options });
+		n++;
+		if (n === 1) return { data: { id: 'img_1', description: { status: 'pending' } } };
+		return { data: { id: 'img_1', description: { status: 'done', alt: 'A red square', caption: 'c', ocr_text: '' } } };
+	};
+	const [[item]] = await run(ctx);
+	assert.equal(ctx.calls.length, 2);
+	assert.equal(ctx.calls[1].options.method, 'GET');
+	assert.equal(ctx.calls[1].options.url, 'https://api.pixelvault.dev/v1/images/img_1');
+	assert.equal(item.json.description.status, 'done');
+	assert.equal(item.json.description.alt, 'A red square');
+});
+
+test('wait for description does not poll when the description was skipped or already done', async () => {
+	for (const data of [
+		{ id: 'img_1', description: null, describe_skipped: 'quota' },
+		{ id: 'img_1', description: { status: 'done', alt: 'x', cached: true } },
+	]) {
+		const ctx = makeContext({
+			params: { operation: 'upload', binaryPropertyName: 'data', options: { describe: true, waitForDescription: true } },
+			response: { data },
+		});
+		const [[item]] = await run(ctx);
+		assert.equal(ctx.calls.length, 1);
+		assert.equal(item.json.describe_skipped, data.describe_skipped);
+	}
+});
