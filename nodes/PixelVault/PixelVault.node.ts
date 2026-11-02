@@ -19,6 +19,25 @@ interface UploadOptions {
 	folder?: string;
 	visibility?: 'public' | 'private';
 	expiresIn?: number;
+	metadata?: unknown;
+}
+
+// Custom metadata must be a JSON object (a string is parsed). Empty means "none". Size and
+// key limits are enforced by the API, which answers with a clear 400.
+function parseMetadata(value: unknown): { metadata?: IDataObject; error?: string } {
+	if (value === undefined || value === null || value === '') return {};
+	let parsed: unknown = value;
+	if (typeof value === 'string') {
+		try {
+			parsed = JSON.parse(value);
+		} catch {
+			return { error: 'Metadata must be a valid JSON object, for example {"env": "prod"}.' };
+		}
+	}
+	if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+		return { error: 'Metadata must be a JSON object, for example {"env": "prod"}.' };
+	}
+	return { metadata: parsed as IDataObject };
 }
 
 // Empty or 0 keeps the image permanent; anything else must be a whole number of seconds
@@ -110,6 +129,12 @@ export class PixelVault implements INodeType {
 						description: 'Have PixelVault fetch an image from a public URL and host it',
 						action: 'Import an image from a URL',
 					},
+					{
+						name: 'Update Image Metadata',
+						value: 'updateMetadata',
+						description: "Replace an image's custom metadata (use {} to clear it)",
+						action: 'Update image metadata',
+					},
 				],
 				default: 'upload',
 			},
@@ -134,11 +159,32 @@ export class PixelVault implements INodeType {
 					'A public HTTPS URL that returns image bytes. Sources that need authentication should be downloaded in n8n first, then uploaded.',
 			},
 			{
+				displayName: 'Image ID',
+				name: 'imageId',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'img_abc123',
+				displayOptions: { show: { operation: ['updateMetadata'] } },
+				description: 'ID of the image whose metadata to replace',
+			},
+			{
+				displayName: 'Metadata (JSON)',
+				name: 'metadata',
+				type: 'json',
+				default: '{}',
+				required: true,
+				displayOptions: { show: { operation: ['updateMetadata'] } },
+				description:
+					'The full metadata object to store. It replaces the existing metadata (it is not merged), so include every key you want to keep. {} clears it. Up to 50 top-level keys and 4 KB.',
+			},
+			{
 				displayName: 'Options',
 				name: 'options',
 				type: 'collection',
 				placeholder: 'Add Option',
 				default: {},
+				displayOptions: { show: { operation: ['upload', 'importUrl'] } },
 				options: [
 					{
 						displayName: 'Expires In (Seconds)',
@@ -154,6 +200,14 @@ export class PixelVault implements INodeType {
 						type: 'string',
 						default: '',
 						description: 'Optional folder name (letters, numbers, hyphens and underscores)',
+					},
+					{
+						displayName: 'Metadata (JSON)',
+						name: 'metadata',
+						type: 'json',
+						default: '',
+						description:
+							'Custom key/values to store with the image, for example {"env": "prod"}. Up to 50 top-level keys and 4 KB. Change it later with Update Image Metadata.',
 					},
 					{
 						displayName: 'Visibility',
@@ -187,6 +241,20 @@ export class PixelVault implements INodeType {
 				throw new NodeOperationError(this.getNode(), expiresError, { itemIndex: i });
 			}
 
+			// Update Image Metadata takes its metadata from the main parameter, not Options.
+			const metadataSource =
+				operation === 'updateMetadata'
+					? this.getNodeParameter('metadata', i, '{}')
+					: options.metadata;
+			const { metadata, error: metadataError } = parseMetadata(metadataSource);
+			if (metadataError) {
+				if (this.continueOnFail()) {
+					returnData.push({ json: { error: metadataError }, pairedItem: { item: i } });
+					continue;
+				}
+				throw new NodeOperationError(this.getNode(), metadataError, { itemIndex: i });
+			}
+
 			try {
 				let requestOptions: IHttpRequestOptions;
 
@@ -203,6 +271,7 @@ export class PixelVault implements INodeType {
 						{
 							...fieldsFromOptions(options),
 							...(expiresIn !== undefined && { expires_in: String(expiresIn) }),
+							...(metadata && Object.keys(metadata).length > 0 && { metadata: JSON.stringify(metadata) }),
 						},
 					);
 					requestOptions = {
@@ -215,7 +284,17 @@ export class PixelVault implements INodeType {
 					const imageUrl = this.getNodeParameter('imageUrl', i) as string;
 					const body: IDataObject = { url: imageUrl, ...fieldsFromOptions(options) };
 					if (expiresIn !== undefined) body.expires_in = expiresIn;
+					if (metadata && Object.keys(metadata).length > 0) body.metadata = metadata;
 					requestOptions = { method: 'POST', url: IMAGES_URL, body, json: true };
+				} else if (operation === 'updateMetadata') {
+					const imageId = this.getNodeParameter('imageId', i) as string;
+					requestOptions = {
+						method: 'PATCH',
+						url: `${IMAGES_URL}/${encodeURIComponent(imageId)}`,
+						// An empty object clears the metadata on the API side.
+						body: { metadata: metadata ?? {} },
+						json: true,
+					};
 				} else {
 					throw new NodeOperationError(this.getNode(), `Unknown operation: ${operation}`, {
 						itemIndex: i,

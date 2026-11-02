@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.2.0
+
+- Add custom image metadata: a `Metadata (JSON)` option on Upload Image and Import Image From URL (a JSON object, up to 50 top-level keys and 4 KB), and a new `Update Image Metadata` operation that replaces an image's metadata (`{}` clears it). Invalid metadata fails before any request is made.
+- Tests for metadata pass-through on both upload paths, validation, and the update operation.
+
 ## 0.1.3
 
 - Validate the `Expires In (Seconds)` option before any request is made: `0` or empty keeps the image permanent, otherwise the value must be a whole number between 60 and 2,592,000. Invalid values fail with a clear error (or become an error item when "Continue On Fail" is on).

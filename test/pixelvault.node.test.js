@@ -227,3 +227,73 @@ test('an invalid expiresIn with continue on fail returns an error item', async (
 	assert.match(item.json.error, /Expires In must be 0/);
 	assert.equal(ctx.calls.length, 0);
 });
+
+test('upload sends metadata as a JSON string field (object or string input)', async () => {
+	for (const metadata of [{ env: 'prod', n: 3 }, '{"env":"prod","n":3}']) {
+		const ctx = makeContext({
+			params: { operation: 'upload', binaryPropertyName: 'data', options: { metadata } },
+			response: { data: { url: 'u' } },
+		});
+		await run(ctx);
+		const body = ctx.calls[0].options.body.toString('latin1');
+		assert.match(body, /name="metadata"\r\n\r\n\{"env":"prod","n":3\}\r\n/);
+	}
+});
+
+test('upload omits metadata when empty', async () => {
+	for (const metadata of [undefined, '', '{}']) {
+		const ctx = makeContext({
+			params: { operation: 'upload', binaryPropertyName: 'data', options: { metadata } },
+			response: { data: { url: 'u' } },
+		});
+		await run(ctx);
+		assert.doesNotMatch(ctx.calls[0].options.body.toString('latin1'), /name="metadata"/);
+	}
+});
+
+test('import sends metadata in the JSON body', async () => {
+	const ctx = makeContext({
+		params: { operation: 'importUrl', imageUrl: 'https://example.com/a.png', options: { metadata: '{"run":"42"}' } },
+		response: { data: { url: 'u' } },
+	});
+	await run(ctx);
+	assert.deepEqual(ctx.calls[0].options.body.metadata, { run: '42' });
+});
+
+test('invalid metadata fails before any request (or becomes an error item)', async () => {
+	for (const metadata of ['not json', '[1]', '"str"']) {
+		const ctx = makeContext({
+			params: { operation: 'upload', binaryPropertyName: 'data', options: { metadata } },
+			response: { data: {} },
+		});
+		await assert.rejects(run(ctx), NodeOperationError);
+		assert.equal(ctx.calls.length, 0);
+	}
+	const ctx = makeContext({
+		params: { operation: 'importUrl', imageUrl: 'https://example.com/a.png', options: { metadata: 'nope' } },
+		continueOnFail: true,
+	});
+	const [[item]] = await run(ctx);
+	assert.match(item.json.error, /Metadata must be/);
+	assert.equal(ctx.calls.length, 0);
+});
+
+test('update metadata PATCHes the image with the object, {} to clear', async () => {
+	const ctx = makeContext({
+		params: { operation: 'updateMetadata', imageId: 'img_1', metadata: '{"a":1}' },
+		response: { data: { id: 'img_1', metadata: { a: 1 } } },
+	});
+	const [[item]] = await run(ctx);
+	const { options } = ctx.calls[0];
+	assert.equal(options.method, 'PATCH');
+	assert.equal(options.url, 'https://api.pixelvault.dev/v1/images/img_1');
+	assert.deepEqual(options.body, { metadata: { a: 1 } });
+	assert.deepEqual(item.json.metadata, { a: 1 });
+
+	const clear = makeContext({
+		params: { operation: 'updateMetadata', imageId: 'img_1', metadata: '{}' },
+		response: { data: { id: 'img_1', metadata: null } },
+	});
+	await run(clear);
+	assert.deepEqual(clear.calls[0].options.body, { metadata: {} });
+});

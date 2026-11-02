@@ -19,6 +19,7 @@ Follow the [community nodes installation guide](https://docs.n8n.io/integrations
 |---|---|
 | **Upload Image** | Uploads an image from a binary property (for example the output of Google Drive, an HTTP Request, or an image-generation node) and returns a public URL. |
 | **Import Image From URL** | Has PixelVault fetch an image from a public HTTPS URL and host it. Use it while the source URL is still valid, for example a generated image whose link expires. |
+| **Update Image Metadata** | Replaces an image's custom metadata by ID (the object replaces the stored one, `{}` clears it). Set metadata at upload time with the **Metadata (JSON)** option on the two operations above. |
 
 Both operations accept these options:
 
