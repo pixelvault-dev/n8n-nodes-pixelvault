@@ -1,6 +1,6 @@
 # n8n-nodes-pixelvault
 
-An [n8n](https://n8n.io/) community node for [PixelVault](https://pixelvault.dev), media hosting built for automations and AI agents. Upload images or MP4 video and pass stable CDN URLs, asset IDs, and asynchronous job IDs to later nodes.
+An [n8n](https://n8n.io/) community node for [PixelVault](https://pixelvault.dev), media hosting built for automations and AI agents. Upload images, MP4 video, or original audio and pass stable CDN URLs and asset/job IDs to later nodes.
 
 - [Installation](#installation)
 - [Operations](#operations)
@@ -27,11 +27,16 @@ Follow the [community nodes installation guide](https://docs.n8n.io/integrations
 | **List Videos** | Discovers videos by page, folder, collection, or metadata. |
 | **Optimize Video** / **Enrich Video** | Starts an asynchronous job. Return IDs immediately or poll with bounded backoff; a local timeout does not cancel the server job. |
 | **Update Video** / **Sign Video URLs** / **Delete Video** | Updates metadata and organization, refreshes private original/artifact URLs, or deletes the video and derivatives. |
+| **Upload Audio** / **Import Audio From URL** | Hosts original MP3, PCM/float WAV, AAC M4A, or Opus/Vorbis OGG with byte validation, privacy, TTL, metadata, folder, collection, and retry safety. |
+| **Get Audio** / **List Audio** / **Update Audio** / **Sign Audio URL** / **Delete Audio** | Discovers and manages audio by stable `aud_` ID, including fresh private links without a public fallback. |
 
-Image and video uploads accept folder, public/private visibility, deletion TTL, and custom metadata. Video uploads also accept collection membership, an idempotency key, private URL expiry, and optional social-ready optimization.
+Image, video, and audio uploads accept folder, public/private visibility, deletion TTL, and custom metadata. Video
+and audio uploads also accept collection membership, an idempotency key, and private URL expiry.
 
 The output is the API object. Images expose fields such as `url`, `id`, `mime_type`, `size`, and `filename`.
-Videos expose `id`, `original_url`, `social_optimization`, and `enrichment`; transcript/storyboard URLs appear only after those artifacts exist. Private URLs are signed and expire independently from asset deletion.
+Videos expose `id`, `original_url`, `social_optimization`, and `enrichment`; transcript/storyboard URLs appear
+only after those artifacts exist. Audio exposes `id`, `original_url`, detected container/codec, duration, sample
+rate, and channels. Private URLs are signed and expire independently from asset deletion.
 
 ## Credentials
 
@@ -54,12 +59,19 @@ Resume-safe asynchronous video flow:
 
 The node can also wait in one execution with bounded backoff. Keep IDs when using that mode: timeout only stops local polling.
 
+Basic audio flow:
+
+1. Download MP3/WAV/M4A/OGG into an n8n binary property, or retain a public HTTPS source URL.
+2. Run **Upload Audio** or **Import Audio From URL** with an idempotency key such as `{{ $execution.id }}:{{ $itemIndex }}`.
+3. Persist the returned stable `aud_` ID. Use **Get Audio** or **List Audio** later; **Sign Audio URL** refreshes a private link, and **Delete Audio** removes the original.
+
 - The binary field name defaults to `data`.
 - Video binary upload supports MP4 files up to 100 MB. This node intentionally does not implement multipart upload; use a public source URL with **Import Video From URL** or an official SDK for larger hosting uploads.
+- Audio originals are limited to the approved global maximum of 25,000,000 bytes. This is not a plan allowance. PixelVault validates actual container/codec bytes and preserves the original without transcoding.
 - URL imports accept public HTTPS sources only. Download authenticated sources in n8n first.
 - Optimization accepts sources up to 100 MB and 60 seconds; enrichment accepts sources from 1 second through 10 minutes and up to 100 MB. API quota and unsupported-source errors are returned without rewriting.
-- Public assets are stable CDN URLs. Private assets never fall back to public; refresh their bearer URLs with **Sign Video URLs**.
-- Hosting does not convert images for a destination. Video social optimization is explicit and asynchronous.
+- Public assets are stable CDN URLs. Private assets never fall back to public; refresh bearer URLs with **Sign Video URLs** or **Sign Audio URL**.
+- Hosting does not convert images or audio for a destination. Video social optimization is explicit and asynchronous. Audio editing, conversion, HLS/DASH, and transcription are intentionally unsupported.
 
 ## Compatibility
 

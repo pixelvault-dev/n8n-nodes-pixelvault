@@ -15,6 +15,8 @@ import {
 
 const IMAGES_URL = 'https://api.pixelvault.dev/v1/images';
 const VIDEOS_URL = 'https://api.pixelvault.dev/v1/videos';
+const AUDIO_URL = 'https://api.pixelvault.dev/v1/audio';
+const AUDIO_MAX_BYTES = 25_000_000;
 const MIN_EXPIRES_IN = 60;
 const MAX_EXPIRES_IN = 2_592_000;
 
@@ -58,14 +60,14 @@ function parseMetadata(value: unknown): { metadata?: IDataObject; error?: string
 	return { metadata: parsed as IDataObject };
 }
 
-// Empty or 0 keeps the image permanent; anything else must be a whole number of seconds
+// Empty or 0 keeps the asset permanent; anything else must be a whole number of seconds
 // inside the range the API accepts, so bad values fail here instead of after a request.
 function parseExpiresIn(value: unknown): { seconds?: number; error?: string } {
 	if (value === undefined || value === null || value === '' || value === 0) return {};
 	const seconds = Number(value);
 	if (!Number.isInteger(seconds) || seconds < MIN_EXPIRES_IN || seconds > MAX_EXPIRES_IN) {
 		return {
-			error: `Expires In must be 0 (keep the image) or a whole number of seconds between ${MIN_EXPIRES_IN} and ${MAX_EXPIRES_IN}.`,
+			error: `Expires In must be 0 (keep the asset) or a whole number of seconds between ${MIN_EXPIRES_IN} and ${MAX_EXPIRES_IN}.`,
 		};
 	}
 	return { seconds };
@@ -76,6 +78,22 @@ function fieldsFromOptions(options: UploadOptions): Record<string, string> {
 	if (options.folder) fields.folder = options.folder;
 	if (options.visibility) fields.visibility = options.visibility;
 	return fields;
+}
+
+function audioContentType(fileName: string, mimeType: string | undefined): string | undefined {
+	const normalized = mimeType?.toLowerCase();
+	if (normalized === 'audio/mpeg' || normalized === 'audio/mp3') return 'audio/mpeg';
+	if (normalized === 'audio/wav' || normalized === 'audio/x-wav') return 'audio/wav';
+	if (normalized === 'audio/mp4' || normalized === 'audio/m4a' || normalized === 'audio/x-m4a') {
+		return 'audio/mp4';
+	}
+	if (normalized === 'audio/ogg' || normalized === 'application/ogg') return 'audio/ogg';
+	const extension = fileName.slice(fileName.lastIndexOf('.') + 1).toLowerCase();
+	if (extension === 'mp3') return 'audio/mpeg';
+	if (extension === 'wav') return 'audio/wav';
+	if (extension === 'm4a') return 'audio/mp4';
+	if (extension === 'ogg') return 'audio/ogg';
+	return undefined;
 }
 
 // Builds a multipart/form-data body by hand so the node needs no runtime dependencies.
@@ -116,7 +134,7 @@ export class PixelVault implements INodeType {
 		group: ['transform'],
 		version: 1,
 		subtitle: '={{$parameter["operation"]}}',
-		description: 'Host images and videos and get CDN URLs',
+		description: 'Host images, video, and audio and get CDN URLs',
 		defaults: {
 			name: 'PixelVault',
 		},
@@ -135,6 +153,7 @@ export class PixelVault implements INodeType {
 				type: 'options',
 				noDataExpression: true,
 				options: [
+					{ name: 'Audio', value: 'audio' },
 					{ name: 'Image', value: 'image' },
 					{ name: 'Video', value: 'video' },
 				],
@@ -167,6 +186,58 @@ export class PixelVault implements INodeType {
 					},
 				],
 				default: 'upload',
+			},
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['audio'] } },
+				options: [
+					{
+						name: 'Delete Audio',
+						value: 'deleteAudio',
+						description: 'Permanently delete an audio original',
+						action: 'Delete audio',
+					},
+					{
+						name: 'Get Audio',
+						value: 'getAudio',
+						description: 'Get the original URL, privacy, expiry, and inspected audio metadata',
+						action: 'Get audio',
+					},
+					{
+						name: 'Import Audio From URL',
+						value: 'importAudio',
+						description: 'Securely import MP3, WAV, M4A, or OGG from a public URL',
+						action: 'Import audio from a URL',
+					},
+					{
+						name: 'List Audio',
+						value: 'listAudio',
+						description: 'List audio with optional folder, collection, and metadata filters',
+						action: 'List audio',
+					},
+					{
+						name: 'Sign Audio URL',
+						value: 'signAudio',
+						description: 'Mint a fresh time-limited URL for a private audio original',
+						action: 'Create a signed audio link',
+					},
+					{
+						name: 'Update Audio',
+						value: 'updateAudio',
+						description: 'Replace audio metadata, folder, and collection membership',
+						action: 'Update audio',
+					},
+					{
+						name: 'Upload Audio',
+						value: 'uploadAudio',
+						description: 'Upload original MP3, WAV, M4A, or OGG binary data',
+						action: 'Upload audio',
+					},
+				],
+				default: 'uploadAudio',
 			},
 			{
 				displayName: 'Operation',
@@ -238,8 +309,8 @@ export class PixelVault implements INodeType {
 				type: 'string',
 				default: 'data',
 				required: true,
-				displayOptions: { show: { operation: ['upload', 'uploadVideo'] } },
-				description: 'Name of the binary property that holds the image or MP4 to upload',
+				displayOptions: { show: { operation: ['upload', 'uploadVideo', 'uploadAudio'] } },
+				description: 'Name of the binary property that holds the image, MP4, or audio file to upload',
 			},
 			{
 				displayName: 'Image URL',
@@ -261,6 +332,31 @@ export class PixelVault implements INodeType {
 				placeholder: 'img_abc123',
 				displayOptions: { show: { operation: ['updateMetadata'] } },
 				description: 'ID of the image whose metadata to replace',
+			},
+			{
+				displayName: 'Audio URL',
+				name: 'audioUrl',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'https://example.com/audio.mp3',
+				displayOptions: { show: { operation: ['importAudio'] } },
+				description:
+					'A public HTTP(S) URL that returns MP3, WAV, M4A, or OGG bytes. Authenticated sources must be downloaded in n8n first.',
+			},
+			{
+				displayName: 'Audio ID',
+				name: 'audioId',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'aud_abc123',
+				displayOptions: {
+					show: {
+						operation: ['getAudio', 'updateAudio', 'signAudio', 'deleteAudio'],
+					},
+				},
+				description: 'Stable audio asset ID',
 			},
 			{
 				displayName: 'Video URL',
@@ -300,7 +396,7 @@ export class PixelVault implements INodeType {
 				type: 'json',
 				default: '{}',
 				required: true,
-				displayOptions: { show: { operation: ['updateMetadata', 'updateVideo'] } },
+				displayOptions: { show: { operation: ['updateMetadata', 'updateVideo', 'updateAudio'] } },
 				description:
 					'The full metadata object to store. It replaces the existing metadata; {} clears it. Up to 50 top-level keys and 4 KB.',
 			},
@@ -316,6 +412,11 @@ export class PixelVault implements INodeType {
 							'upload',
 							'importUrl',
 							'uploadVideo',
+							'uploadAudio',
+							'importAudio',
+							'listAudio',
+							'updateAudio',
+							'signAudio',
 							'importVideo',
 							'listVideos',
 							'optimizeVideo',
@@ -332,7 +433,7 @@ export class PixelVault implements INodeType {
 						type: 'string',
 						default: '',
 						displayOptions: {
-							show: { operation: ['uploadVideo', 'importVideo', 'listVideos', 'updateVideo'] },
+							show: { operation: ['uploadVideo', 'importVideo', 'listVideos', 'updateVideo', 'uploadAudio', 'importAudio', 'listAudio', 'updateAudio'] },
 						},
 						description: 'Existing collection membership, or a collection filter when listing',
 					},
@@ -350,7 +451,7 @@ export class PixelVault implements INodeType {
 						name: 'expiresIn',
 						type: 'number',
 						default: 0,
-						displayOptions: { show: { operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo'] } },
+						displayOptions: { show: { operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo', 'uploadAudio', 'importAudio'] } },
 						description:
 							'Delete the asset automatically after this many seconds (60 to 2,592,000). 0 keeps it.',
 					},
@@ -361,7 +462,7 @@ export class PixelVault implements INodeType {
 						default: '',
 						displayOptions: {
 							show: {
-								operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo', 'listVideos', 'updateVideo'],
+								operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo', 'listVideos', 'updateVideo', 'uploadAudio', 'importAudio', 'listAudio', 'updateAudio'],
 							},
 						},
 						description: 'Optional folder name (letters, numbers, hyphens and underscores)',
@@ -371,7 +472,7 @@ export class PixelVault implements INodeType {
 						name: 'idempotencyKey',
 						type: 'string',
 						default: '',
-						displayOptions: { show: { operation: ['uploadVideo', 'importVideo'] } },
+						displayOptions: { show: { operation: ['uploadVideo', 'importVideo', 'uploadAudio', 'importAudio'] } },
 						description:
 							'Stable key for safely retrying this upload/import. Reuse with identical input; conflicting reuse fails.',
 					},
@@ -381,7 +482,7 @@ export class PixelVault implements INodeType {
 						type: 'json',
 						default: '',
 						displayOptions: {
-							show: { operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo', 'listVideos'] },
+							show: { operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo', 'listVideos', 'uploadAudio', 'importAudio', 'listAudio'] },
 						},
 						description:
 							'Custom key/values to store or match, for example {"env": "prod"}. Up to 50 top-level keys and 4 KB.',
@@ -400,7 +501,7 @@ export class PixelVault implements INodeType {
 						type: 'number',
 						default: 1,
 						typeOptions: { minValue: 1 },
-						displayOptions: { show: { operation: ['listVideos'] } },
+						displayOptions: { show: { operation: ['listVideos', 'listAudio'] } },
 					},
 					{
 						displayName: 'Per Page',
@@ -408,14 +509,14 @@ export class PixelVault implements INodeType {
 						type: 'number',
 						default: 20,
 						typeOptions: { minValue: 1, maxValue: 100 },
-						displayOptions: { show: { operation: ['listVideos'] } },
+						displayOptions: { show: { operation: ['listVideos', 'listAudio'] } },
 					},
 					{
 						displayName: 'Signed URL Expiry (Seconds)',
 						name: 'signExpiresIn',
 						type: 'number',
 						default: 3600,
-						displayOptions: { show: { operation: ['uploadVideo', 'importVideo', 'signVideo'] } },
+						displayOptions: { show: { operation: ['uploadVideo', 'importVideo', 'signVideo', 'uploadAudio', 'importAudio', 'signAudio'] } },
 						description: 'Private URL lifetime, from 60 to 2,592,000 seconds',
 					},
 					{
@@ -427,7 +528,7 @@ export class PixelVault implements INodeType {
 							{ name: 'Private (Signed URL)', value: 'private' },
 						],
 						default: 'public',
-						displayOptions: { show: { operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo'] } },
+						displayOptions: { show: { operation: ['upload', 'importUrl', 'uploadVideo', 'importVideo', 'uploadAudio', 'importAudio'] } },
 						description: 'Private media is returned with time-limited signed URLs',
 					},
 					{
@@ -480,7 +581,7 @@ export class PixelVault implements INodeType {
 
 			// Update operations take metadata from the main parameter; uploads and list filters use Options.
 			const metadataSource =
-				operation === 'updateMetadata' || operation === 'updateVideo'
+				operation === 'updateMetadata' || operation === 'updateVideo' || operation === 'updateAudio'
 					? this.getNodeParameter('metadata', i, '{}')
 					: options.metadata;
 			const { metadata, error: metadataError } = parseMetadata(metadataSource);
@@ -533,6 +634,95 @@ export class PixelVault implements INodeType {
 						body: { metadata: metadata ?? {} },
 						json: true,
 					};
+				} else if (operation === 'uploadAudio') {
+					const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i) as string;
+					const binaryData = this.helpers.assertBinaryData(i, binaryPropertyName);
+					const buffer = await this.helpers.getBinaryDataBuffer(i, binaryPropertyName);
+					if (buffer.length > AUDIO_MAX_BYTES) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'Audio originals are limited to the approved global maximum of 25,000,000 bytes. This is not a plan allowance.',
+							{ itemIndex: i },
+						);
+					}
+					const filename = binaryData.fileName ?? 'audio.mp3';
+					const contentType = audioContentType(filename, binaryData.mimeType);
+					if (!contentType) {
+						throw new NodeOperationError(
+							this.getNode(),
+							'Audio binary data must be MP3, WAV, M4A, or OGG. Set a supported filename or MIME type.',
+							{ itemIndex: i },
+						);
+					}
+					const headers: Record<string, string> = {
+						'Content-Type': contentType,
+						'Content-Length': String(buffer.length),
+						'X-PixelVault-Filename': encodeURIComponent(filename),
+					};
+					if (options.visibility) headers['X-PixelVault-Visibility'] = options.visibility;
+					if (expiresIn !== undefined) headers['X-PixelVault-Expires-In'] = String(expiresIn);
+					if (options.folder) headers['X-PixelVault-Folder'] = options.folder;
+					if (options.collectionId) headers['X-PixelVault-Collection-Id'] = options.collectionId;
+					if (metadata && Object.keys(metadata).length > 0) {
+						headers['X-PixelVault-Metadata'] = JSON.stringify(metadata);
+					}
+					if (options.signExpiresIn) {
+						headers['X-PixelVault-Sign-Expires-In'] = String(options.signExpiresIn);
+					}
+					if (options.idempotencyKey) {
+						headers['Idempotency-Key'] = options.idempotencyKey;
+						headers['X-PixelVault-Content-SHA256'] = createHash('sha256').update(buffer).digest('hex');
+					}
+					requestOptions = { method: 'POST', url: AUDIO_URL, headers, body: buffer };
+				} else if (operation === 'importAudio') {
+					const audioUrl = this.getNodeParameter('audioUrl', i) as string;
+					const body: IDataObject = { url: audioUrl };
+					if (options.visibility) body.visibility = options.visibility;
+					if (expiresIn !== undefined) body.expires_in = expiresIn;
+					if (options.folder) body.folder = options.folder;
+					if (options.collectionId) body.collection_id = options.collectionId;
+					if (metadata && Object.keys(metadata).length > 0) body.metadata = metadata;
+					if (options.signExpiresIn) body.sign_expires_in = options.signExpiresIn;
+					requestOptions = {
+						method: 'POST',
+						url: AUDIO_URL,
+						headers: options.idempotencyKey ? { 'Idempotency-Key': options.idempotencyKey } : {},
+						body,
+						json: true,
+					};
+				} else if (operation === 'listAudio') {
+					const qs: IDataObject = {};
+					if (options.page) qs.page = options.page;
+					if (options.perPage) qs.per_page = options.perPage;
+					if (options.folder) qs.folder = options.folder;
+					if (options.collectionId) qs.collection_id = options.collectionId;
+					if (metadata && Object.keys(metadata).length > 0) qs.metadata = JSON.stringify(metadata);
+					requestOptions = { method: 'GET', url: AUDIO_URL, qs, json: true };
+				} else if (
+					operation === 'getAudio' ||
+					operation === 'deleteAudio' ||
+					operation === 'signAudio' ||
+					operation === 'updateAudio'
+				) {
+					const audioId = this.getNodeParameter('audioId', i) as string;
+					const audioUrl = `${AUDIO_URL}/${encodeURIComponent(audioId)}`;
+					if (operation === 'getAudio') {
+						requestOptions = { method: 'GET', url: audioUrl, json: true };
+					} else if (operation === 'deleteAudio') {
+						requestOptions = { method: 'DELETE', url: audioUrl, json: true };
+					} else if (operation === 'signAudio') {
+						requestOptions = {
+							method: 'POST',
+							url: `${audioUrl}/sign-url`,
+							body: options.signExpiresIn ? { expires_in: options.signExpiresIn } : {},
+							json: true,
+						};
+					} else {
+						const body: IDataObject = { metadata: metadata ?? {} };
+						if (options.folder !== undefined) body.folder = options.folder || null;
+						if (options.collectionId !== undefined) body.collection_id = options.collectionId || null;
+						requestOptions = { method: 'PATCH', url: audioUrl, body, json: true };
+					}
 				} else if (operation === 'uploadVideo') {
 					const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i) as string;
 					const binaryData = this.helpers.assertBinaryData(i, binaryPropertyName);
@@ -625,6 +815,8 @@ export class PixelVault implements INodeType {
 				let output: IDataObject;
 				if (operation === 'listVideos') {
 					output = { videos: parsed.data ?? [], meta: parsed.meta ?? {} };
+				} else if (operation === 'listAudio') {
+					output = { audio: parsed.data ?? [], meta: parsed.meta ?? {} };
 				} else {
 					output = (parsed.data ?? (parsed as IDataObject)) as IDataObject;
 				}
