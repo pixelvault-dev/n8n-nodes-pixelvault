@@ -5,6 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { NodeApiError, NodeOperationError } = require('n8n-workflow');
+const { createHash } = require('node:crypto');
 
 const { PixelVault } = require('../dist/nodes/PixelVault/PixelVault.node.js');
 const { PixelVaultApi } = require('../dist/credentials/PixelVaultApi.credentials.js');
@@ -361,4 +362,196 @@ test('wait for description does not poll when the description was skipped or alr
 		assert.equal(ctx.calls.length, 1);
 		assert.equal(item.json.describe_skipped, data.describe_skipped);
 	}
+});
+
+test('video upload sends raw MP4 headers, lifecycle fields, and a replay checksum', async () => {
+	const ctx = makeContext({
+		params: {
+			operation: 'uploadVideo',
+			binaryPropertyName: 'data',
+			options: {
+				visibility: 'private',
+				expiresIn: 3600,
+				folder: 'demos',
+				collectionId: 'col_1',
+				metadata: { env: 'test' },
+				socialReady: true,
+				signExpiresIn: 300,
+				idempotencyKey: 'retry-1',
+			},
+		},
+		response: { data: { id: 'vid_1', kind: 'video' } },
+	});
+	const [[item]] = await run(ctx);
+	const request = ctx.calls[0].options;
+	assert.equal(item.json.id, 'vid_1');
+	assert.equal(request.url, 'https://api.pixelvault.dev/v1/videos');
+	assert.equal(request.headers['Content-Type'], 'video/mp4');
+	assert.equal(request.headers['Content-Length'], String(PNG.length));
+	assert.equal(request.headers['X-PixelVault-Filename'], 'pixel.png');
+	assert.equal(request.headers['X-PixelVault-Visibility'], 'private');
+	assert.equal(request.headers['X-PixelVault-Expires-In'], '3600');
+	assert.equal(request.headers['X-PixelVault-Folder'], 'demos');
+	assert.equal(request.headers['X-PixelVault-Collection-Id'], 'col_1');
+	assert.equal(request.headers['X-PixelVault-Social-Ready'], 'true');
+	assert.equal(request.headers['X-PixelVault-Sign-Expires-In'], '300');
+	assert.equal(request.headers['Idempotency-Key'], 'retry-1');
+	assert.equal(request.headers['X-PixelVault-Content-SHA256'], createHash('sha256').update(PNG).digest('hex'));
+	assert.deepEqual(JSON.parse(request.headers['X-PixelVault-Metadata']), { env: 'test' });
+	assert.deepEqual(request.body, PNG);
+});
+
+test('video import passes secure import and lifecycle fields as JSON', async () => {
+	const ctx = makeContext({
+		params: {
+			operation: 'importVideo',
+			videoUrl: 'https://example.com/demo.mp4',
+			options: {
+				visibility: 'private',
+				expiresIn: 3600,
+				folder: 'demos',
+				collectionId: 'col_1',
+				metadata: { source: 'test' },
+				socialReady: true,
+				signExpiresIn: 300,
+				idempotencyKey: 'import-1',
+			},
+		},
+		response: { data: { id: 'vid_1' } },
+	});
+	await run(ctx);
+	const request = ctx.calls[0].options;
+	assert.equal(request.headers['Idempotency-Key'], 'import-1');
+	assert.deepEqual(request.body, {
+		url: 'https://example.com/demo.mp4',
+		visibility: 'private',
+		expires_in: 3600,
+		folder: 'demos',
+		collection_id: 'col_1',
+		metadata: { source: 'test' },
+		social_ready: true,
+		sign_expires_in: 300,
+	});
+});
+
+test('video enrichment returns job IDs immediately and can resume with Get Video', async () => {
+	const pending = {
+		id: 'vid_1',
+		enrichment: { job_id: 'ven_1', status: 'pending' },
+		social_optimization: { status: 'not_requested' },
+	};
+	const enrich = makeContext({
+		params: { operation: 'enrichVideo', videoId: 'vid_1', options: {} },
+		response: { data: pending },
+	});
+	const [[queued]] = await run(enrich);
+	assert.equal(enrich.calls.length, 1);
+	assert.equal(enrich.calls[0].options.url, 'https://api.pixelvault.dev/v1/videos/vid_1/enrich');
+	assert.equal(queued.json.enrichment.job_id, 'ven_1');
+
+	const resume = makeContext({
+		params: { operation: 'getVideo', videoId: 'vid_1' },
+		response: { data: { ...pending, enrichment: { job_id: 'ven_1', status: 'complete', transcript: {} } } },
+	});
+	const [[completed]] = await run(resume);
+	assert.equal(resume.calls[0].options.method, 'GET');
+	assert.equal(completed.json.enrichment.status, 'complete');
+});
+
+test('video job wait polls with a local bound and does not imply cancellation', async () => {
+	const ctx = makeContext({
+		params: {
+			operation: 'optimizeVideo',
+			videoId: 'vid_1',
+			options: { waitForCompletion: true, waitTimeoutSeconds: 0.01 },
+		},
+		response: {},
+	});
+	let call = 0;
+	ctx.helpers.httpRequestWithAuthentication = async function (credentialName, options) {
+		ctx.calls.push({ credentialName, options });
+		call++;
+		if (call === 1) {
+			return {
+				data: {
+					id: 'vid_1',
+					social_optimization: { job_id: 'vop_1', status: 'processing' },
+				},
+			};
+		}
+		return {
+			data: {
+				id: 'vid_1',
+				social_optimization: { job_id: 'vop_1', status: 'complete' },
+			},
+		};
+	};
+	const [[item]] = await run(ctx);
+	assert.equal(ctx.calls.length, 2);
+	assert.equal(ctx.calls[1].options.url, 'https://api.pixelvault.dev/v1/videos/vid_1');
+	assert.equal(item.json.social_optimization.status, 'complete');
+
+	const timeout = makeContext({
+		params: {
+			operation: 'enrichVideo',
+			videoId: 'vid_1',
+			options: { waitForCompletion: true, waitTimeoutSeconds: 0 },
+		},
+		response: { data: { id: 'vid_1', enrichment: { job_id: 'ven_1', status: 'pending' } } },
+	});
+	const [[timedOut]] = await run(timeout);
+	assert.equal(timeout.calls.length, 1);
+	assert.equal(timedOut.json.wait_timed_out, true);
+	assert.equal(timedOut.json.enrichment.status, 'pending');
+});
+
+test('video list, update, signing, and deletion use the REST contract', async () => {
+	const list = makeContext({
+		params: {
+			operation: 'listVideos',
+			options: { page: 2, perPage: 5, folder: 'demos', collectionId: 'col_1', metadata: { env: 'test' } },
+		},
+		response: { data: [{ id: 'vid_1' }], meta: { total: 1, page: 2, per_page: 5 } },
+	});
+	const [[listed]] = await run(list);
+	assert.deepEqual(list.calls[0].options.qs, {
+		page: 2,
+		per_page: 5,
+		folder: 'demos',
+		collection_id: 'col_1',
+		metadata: '{\"env\":\"test\"}',
+	});
+	assert.equal(listed.json.videos[0].id, 'vid_1');
+
+	const update = makeContext({
+		params: {
+			operation: 'updateVideo',
+			videoId: 'vid_1',
+			metadata: { env: 'prod' },
+			options: { folder: '', collectionId: '' },
+		},
+		response: { data: { id: 'vid_1', folder: null, collection_id: null, metadata: { env: 'prod' } } },
+	});
+	await run(update);
+	assert.deepEqual(update.calls[0].options.body, {
+		metadata: { env: 'prod' },
+		folder: null,
+		collection_id: null,
+	});
+
+	const sign = makeContext({
+		params: { operation: 'signVideo', videoId: 'vid_1', options: { signExpiresIn: 300 } },
+		response: { data: { url: 'https://signed.example/video.mp4', expires: 123, enrichment: {} } },
+	});
+	const [[signed]] = await run(sign);
+	assert.deepEqual(sign.calls[0].options.body, { expires_in: 300 });
+	assert.equal(signed.json.url, 'https://signed.example/video.mp4');
+
+	const remove = makeContext({
+		params: { operation: 'deleteVideo', videoId: 'vid_1' },
+		response: { success: true },
+	});
+	const [[deleted]] = await run(remove);
+	assert.equal(remove.calls[0].options.method, 'DELETE');
+	assert.equal(deleted.json.success, true);
 });

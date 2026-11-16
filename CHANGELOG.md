@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.4.0
+
+- Add MP4 upload and secure URL import with privacy, deletion TTL, metadata, folder, collection, signed-URL lifetime, social optimization, and replay-safe idempotency.
+- Add video get/list/update/delete/sign, optimization, and enrichment operations.
+- Return asynchronous asset/job IDs immediately by default; optional bounded polling reports local timeout without cancelling the server job. Get Video resumes from the stable asset ID.
+- Keep all image operations unchanged.
+
 ## 0.3.0
 
 - Add AI descriptions: a `Describe With AI` option on Upload Image and Import Image From URL (alt text, caption and OCR text, generated in the background; free 20 in total, Starter 1,000 a month, Pro 10,000 a month; secret key and verified email required) and a `Wait For Description` option that waits up to about 40 seconds and puts `description` in the output. If it cannot start, the upload still succeeds and the output has `describe_skipped`.
