@@ -15,7 +15,7 @@ const PNG = Buffer.from(
 	'base64',
 );
 
-function makeContext({ params = {}, items = [{ json: {} }], response, fail, continueOnFail = false }) {
+function makeContext({ params = {}, items = [{ json: {} }], response, fail, continueOnFail = false, binary }) {
 	const calls = [];
 	const ctx = {
 		calls,
@@ -24,8 +24,8 @@ function makeContext({ params = {}, items = [{ json: {} }], response, fail, cont
 		getNode: () => ({ name: 'PixelVault', type: 'n8n-nodes-pixelvault.pixelVault' }),
 		continueOnFail: () => continueOnFail,
 		helpers: {
-			assertBinaryData: () => ({ fileName: 'pixel.png', mimeType: 'image/png' }),
-			getBinaryDataBuffer: async () => PNG,
+			assertBinaryData: () => binary?.data ?? { fileName: 'pixel.png', mimeType: 'image/png' },
+			getBinaryDataBuffer: async () => binary?.buffer ?? PNG,
 			httpRequestWithAuthentication: async function (credentialName, options) {
 				calls.push({ credentialName, options });
 				if (fail) throw fail;
@@ -549,6 +549,145 @@ test('video list, update, signing, and deletion use the REST contract', async ()
 
 	const remove = makeContext({
 		params: { operation: 'deleteVideo', videoId: 'vid_1' },
+		response: { success: true },
+	});
+	const [[deleted]] = await run(remove);
+	assert.equal(remove.calls[0].options.method, 'DELETE');
+	assert.equal(deleted.json.success, true);
+});
+
+test('audio upload sends canonical raw headers, lifecycle fields, and a replay checksum', async () => {
+	const bytes = Buffer.from('ogg');
+	const ctx = makeContext({
+		params: {
+			operation: 'uploadAudio',
+			binaryPropertyName: 'data',
+			options: {
+				visibility: 'private',
+				expiresIn: 3600,
+				folder: 'episodes',
+				collectionId: 'col_1',
+				metadata: { season: 1 },
+				signExpiresIn: 300,
+				idempotencyKey: 'audio-retry-1',
+			},
+		},
+		binary: { data: { fileName: 'episode.ogg', mimeType: 'audio/ogg' }, buffer: bytes },
+		response: { data: { id: 'aud_1', kind: 'audio' } },
+	});
+	const [[item]] = await run(ctx);
+	const request = ctx.calls[0].options;
+	assert.equal(item.json.id, 'aud_1');
+	assert.equal(request.url, 'https://api.pixelvault.dev/v1/audio');
+	assert.equal(request.headers['Content-Type'], 'audio/ogg');
+	assert.equal(request.headers['Content-Length'], String(bytes.length));
+	assert.equal(request.headers['X-PixelVault-Filename'], 'episode.ogg');
+	assert.equal(request.headers['X-PixelVault-Visibility'], 'private');
+	assert.equal(request.headers['X-PixelVault-Expires-In'], '3600');
+	assert.equal(request.headers['X-PixelVault-Folder'], 'episodes');
+	assert.equal(request.headers['X-PixelVault-Collection-Id'], 'col_1');
+	assert.equal(request.headers['X-PixelVault-Sign-Expires-In'], '300');
+	assert.equal(request.headers['Idempotency-Key'], 'audio-retry-1');
+	assert.equal(request.headers['X-PixelVault-Content-SHA256'], createHash('sha256').update(bytes).digest('hex'));
+	assert.deepEqual(JSON.parse(request.headers['X-PixelVault-Metadata']), { season: 1 });
+	assert.deepEqual(request.body, bytes);
+});
+
+test('audio upload rejects an original above the approved global ceiling before an API request', async () => {
+	const ctx = makeContext({
+		params: { operation: 'uploadAudio', binaryPropertyName: 'data', options: {} },
+		binary: {
+			data: { fileName: 'oversized.mp3', mimeType: 'audio/mpeg' },
+			buffer: Buffer.alloc(25_000_001),
+		},
+	});
+	await assert.rejects(run(ctx), /25,000,000 bytes/);
+	assert.equal(ctx.calls.length, 0);
+});
+
+test('audio import passes URL and lifecycle fields as JSON', async () => {
+	const ctx = makeContext({
+		params: {
+			operation: 'importAudio',
+			audioUrl: 'https://example.com/episode.m4a',
+			options: {
+				visibility: 'private',
+				expiresIn: 3600,
+				folder: 'episodes',
+				collectionId: 'col_1',
+				metadata: { source: 'test' },
+				signExpiresIn: 300,
+				idempotencyKey: 'audio-import-1',
+			},
+		},
+		response: { data: { id: 'aud_1' } },
+	});
+	await run(ctx);
+	const request = ctx.calls[0].options;
+	assert.equal(request.headers['Idempotency-Key'], 'audio-import-1');
+	assert.deepEqual(request.body, {
+		url: 'https://example.com/episode.m4a',
+		visibility: 'private',
+		expires_in: 3600,
+		folder: 'episodes',
+		collection_id: 'col_1',
+		metadata: { source: 'test' },
+		sign_expires_in: 300,
+	});
+});
+
+test('audio list, get, update, signing, and deletion use the REST contract', async () => {
+	const list = makeContext({
+		params: {
+			operation: 'listAudio',
+			options: { page: 2, perPage: 5, folder: 'episodes', collectionId: 'col_1', metadata: { season: 1 } },
+		},
+		response: { data: [{ id: 'aud_1' }], meta: { total: 1, page: 2, per_page: 5 } },
+	});
+	const [[listed]] = await run(list);
+	assert.deepEqual(list.calls[0].options.qs, {
+		page: 2,
+		per_page: 5,
+		folder: 'episodes',
+		collection_id: 'col_1',
+		metadata: '{\"season\":1}',
+	});
+	assert.equal(listed.json.audio[0].id, 'aud_1');
+
+	const get = makeContext({
+		params: { operation: 'getAudio', audioId: 'aud_1' },
+		response: { data: { id: 'aud_1', codec: 'opus' } },
+	});
+	const [[fetched]] = await run(get);
+	assert.equal(get.calls[0].options.method, 'GET');
+	assert.equal(fetched.json.codec, 'opus');
+
+	const update = makeContext({
+		params: {
+			operation: 'updateAudio',
+			audioId: 'aud_1',
+			metadata: { season: 2 },
+			options: { folder: '', collectionId: '' },
+		},
+		response: { data: { id: 'aud_1' } },
+	});
+	await run(update);
+	assert.deepEqual(update.calls[0].options.body, {
+		metadata: { season: 2 },
+		folder: null,
+		collection_id: null,
+	});
+
+	const sign = makeContext({
+		params: { operation: 'signAudio', audioId: 'aud_1', options: { signExpiresIn: 300 } },
+		response: { data: { url: 'https://signed.example/audio.ogg', expires: 123, visibility: 'private' } },
+	});
+	const [[signed]] = await run(sign);
+	assert.deepEqual(sign.calls[0].options.body, { expires_in: 300 });
+	assert.equal(signed.json.url, 'https://signed.example/audio.ogg');
+
+	const remove = makeContext({
+		params: { operation: 'deleteAudio', audioId: 'aud_1' },
 		response: { success: true },
 	});
 	const [[deleted]] = await run(remove);

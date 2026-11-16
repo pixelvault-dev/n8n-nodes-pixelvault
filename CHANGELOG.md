@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.5.0
+
+- Add original MP3, WAV, M4A, and OGG upload/import with actual-byte validation, privacy, TTL, organization, metadata, and retry safety.
+- Add audio get/list/update/sign/delete operations and a resume-safe n8n workflow using stable `aud_` IDs.
+- Enforce the approved global 25,000,000-byte original ceiling without adding a plan allowance.
+- Preserve all existing image and video operations.
+
 ## 0.4.0
 
 - Add MP4 upload and secure URL import with privacy, deletion TTL, metadata, folder, collection, signed-URL lifetime, social optimization, and replay-safe idempotency.
