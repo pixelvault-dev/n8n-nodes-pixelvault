@@ -201,10 +201,16 @@ export class PixelVault implements INodeType {
 						action: 'Delete audio',
 					},
 					{
-						name: 'Get Audio',
+						name: 'Enrich Audio',
+						value: 'enrichAudio',
+						description: 'Start or resume transcription, optionally waiting for text, WebVTT, and timestamped JSON',
+						action: 'Enrich audio',
+					},
+					{
+						name: 'Get Audio Status and Artifacts',
 						value: 'getAudio',
-						description: 'Get the original URL, privacy, expiry, and inspected audio metadata',
-						action: 'Get audio',
+						description: 'Resume from a stable ID and get the original, transcription status, and available transcript URLs',
+						action: 'Get audio status and artifacts',
 					},
 					{
 						name: 'Import Audio From URL',
@@ -219,10 +225,10 @@ export class PixelVault implements INodeType {
 						action: 'List audio',
 					},
 					{
-						name: 'Sign Audio URL',
+						name: 'Sign Audio URLs',
 						value: 'signAudio',
-						description: 'Mint a fresh time-limited URL for a private audio original',
-						action: 'Create a signed audio link',
+						description: 'Mint fresh time-limited URLs for a private audio original and available transcripts',
+						action: 'Create signed audio links',
 					},
 					{
 						name: 'Update Audio',
@@ -353,7 +359,7 @@ export class PixelVault implements INodeType {
 				placeholder: 'aud_abc123',
 				displayOptions: {
 					show: {
-						operation: ['getAudio', 'updateAudio', 'signAudio', 'deleteAudio'],
+						operation: ['getAudio', 'enrichAudio', 'updateAudio', 'signAudio', 'deleteAudio'],
 					},
 				},
 				description: 'Stable audio asset ID',
@@ -536,9 +542,9 @@ export class PixelVault implements INodeType {
 						name: 'waitForCompletion',
 						type: 'boolean',
 						default: false,
-						displayOptions: { show: { operation: ['optimizeVideo', 'enrichVideo'] } },
+						displayOptions: { show: { operation: ['optimizeVideo', 'enrichVideo', 'enrichAudio'] } },
 						description:
-							'Whether to poll with bounded backoff. Leave off to return the asset and job IDs immediately and resume later with Get Video.',
+							'Whether to poll with bounded backoff. Leave off to return asset/job IDs immediately and resume later with the corresponding Get operation.',
 					},
 					{
 						displayName: 'Wait For Description',
@@ -555,7 +561,7 @@ export class PixelVault implements INodeType {
 						type: 'number',
 						default: 600,
 						typeOptions: { minValue: 1, maxValue: 3600 },
-						displayOptions: { show: { operation: ['optimizeVideo', 'enrichVideo'] } },
+						displayOptions: { show: { operation: ['optimizeVideo', 'enrichVideo', 'enrichAudio'] } },
 						description: 'Local polling limit. Timing out does not cancel the server job.',
 					},
 				],
@@ -702,7 +708,8 @@ export class PixelVault implements INodeType {
 					operation === 'getAudio' ||
 					operation === 'deleteAudio' ||
 					operation === 'signAudio' ||
-					operation === 'updateAudio'
+					operation === 'updateAudio' ||
+					operation === 'enrichAudio'
 				) {
 					const audioId = this.getNodeParameter('audioId', i) as string;
 					const audioUrl = `${AUDIO_URL}/${encodeURIComponent(audioId)}`;
@@ -717,6 +724,8 @@ export class PixelVault implements INodeType {
 							body: options.signExpiresIn ? { expires_in: options.signExpiresIn } : {},
 							json: true,
 						};
+					} else if (operation === 'enrichAudio') {
+						requestOptions = { method: 'POST', url: `${audioUrl}/enrich`, json: true };
 					} else {
 						const body: IDataObject = { metadata: metadata ?? {} };
 						if (options.folder !== undefined) body.folder = options.folder || null;
@@ -847,16 +856,18 @@ export class PixelVault implements INodeType {
 					}
 				}
 
-				// Video job calls return asset/job identifiers immediately. Waiting is optional and locally bounded.
+				// Media job calls return stable asset/job identifiers immediately. Waiting is optional and locally bounded.
 				if (
-					(operation === 'optimizeVideo' || operation === 'enrichVideo') &&
+					(operation === 'optimizeVideo' || operation === 'enrichVideo' || operation === 'enrichAudio') &&
 					options.waitForCompletion &&
 					typeof output.id === 'string'
 				) {
-					const pollingVideoId = output.id;
+					const pollingId = output.id;
 					const deadline = Date.now() + (options.waitTimeoutSeconds ?? 600) * 1000;
 					let delay = VIDEO_POLL_INITIAL_MS;
-					const jobField = operation === 'enrichVideo' ? 'enrichment' : 'social_optimization';
+					const isAudioEnrichment = operation === 'enrichAudio';
+					const jobField = operation === 'optimizeVideo' ? 'social_optimization' : 'enrichment';
+					const pollUrl = isAudioEnrichment ? AUDIO_URL : VIDEOS_URL;
 					for (;;) {
 						const job = output[jobField] as IDataObject | undefined;
 						if (job?.status !== 'pending' && job?.status !== 'processing') break;
@@ -869,7 +880,7 @@ export class PixelVault implements INodeType {
 						const polled = (await this.helpers.httpRequestWithAuthentication.call(
 							this,
 							'pixelVaultApi',
-							{ method: 'GET', url: `${VIDEOS_URL}/${encodeURIComponent(pollingVideoId)}`, json: true },
+							{ method: 'GET', url: `${pollUrl}/${encodeURIComponent(pollingId)}`, json: true },
 						)) as IDataObject | string;
 						output = (
 							(typeof polled === 'string' ? JSON.parse(polled) : polled) as { data: IDataObject }
