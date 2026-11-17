@@ -636,6 +636,69 @@ test('audio import passes URL and lifecycle fields as JSON', async () => {
 	});
 });
 
+test('audio enrichment exposes stable IDs, resumes, and polls with a local bound', async () => {
+	const pending = {
+		id: 'aud_1',
+		enrichment: { job_id: 'aen_1', status: 'pending' },
+	};
+	const enrich = makeContext({
+		params: { operation: 'enrichAudio', audioId: 'aud_1', options: {} },
+		response: { data: pending },
+	});
+	const [[queued]] = await run(enrich);
+	assert.equal(enrich.calls[0].options.url, 'https://api.pixelvault.dev/v1/audio/aud_1/enrich');
+	assert.equal(queued.json.enrichment.job_id, 'aen_1');
+
+	const resume = makeContext({
+		params: { operation: 'getAudio', audioId: 'aud_1' },
+		response: {
+			data: {
+				...pending,
+				enrichment: {
+					job_id: 'aen_1',
+					status: 'complete',
+					transcript: { status: 'complete', text_url: 'https://img.example/transcript.txt' },
+				},
+			},
+		},
+	});
+	const [[completed]] = await run(resume);
+	assert.equal(completed.json.enrichment.transcript.text_url, 'https://img.example/transcript.txt');
+
+	const wait = makeContext({
+		params: {
+			operation: 'enrichAudio',
+			audioId: 'aud_1',
+			options: { waitForCompletion: true, waitTimeoutSeconds: 0.01 },
+		},
+		response: {},
+	});
+	let call = 0;
+	wait.helpers.httpRequestWithAuthentication = async function (credentialName, options) {
+		wait.calls.push({ credentialName, options });
+		call++;
+		return call === 1
+			? { data: pending }
+			: { data: { ...pending, enrichment: { job_id: 'aen_1', status: 'failed', error: { message: 'No speech.' } } } };
+	};
+	const [[failed]] = await run(wait);
+	assert.equal(wait.calls[1].options.url, 'https://api.pixelvault.dev/v1/audio/aud_1');
+	assert.equal(failed.json.enrichment.status, 'failed');
+
+	const timeout = makeContext({
+		params: {
+			operation: 'enrichAudio',
+			audioId: 'aud_1',
+			options: { waitForCompletion: true, waitTimeoutSeconds: 0 },
+		},
+		response: { data: pending },
+	});
+	const [[timedOut]] = await run(timeout);
+	assert.equal(timeout.calls.length, 1);
+	assert.equal(timedOut.json.wait_timed_out, true);
+	assert.equal(timedOut.json.enrichment.status, 'pending');
+});
+
 test('audio list, get, update, signing, and deletion use the REST contract', async () => {
 	const list = makeContext({
 		params: {
