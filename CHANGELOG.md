@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.7.0
+
+- Add custom-domain list/create/refresh/delete operations with DNS records, readiness, and account plan capacity.
+- Surface the API's optional `branded_url` alongside canonical media URLs.
+
 ## 0.5.0
 
 - Add original MP3, WAV, M4A, and OGG upload/import with actual-byte validation, privacy, TTL, organization, metadata, and retry safety.

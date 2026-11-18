@@ -16,6 +16,7 @@ import {
 const IMAGES_URL = 'https://api.pixelvault.dev/v1/images';
 const VIDEOS_URL = 'https://api.pixelvault.dev/v1/videos';
 const AUDIO_URL = 'https://api.pixelvault.dev/v1/audio';
+const CUSTOM_DOMAINS_URL = 'https://api.pixelvault.dev/v1/custom-domains';
 const AUDIO_MAX_BYTES = 25_000_000;
 const MIN_EXPIRES_IN = 60;
 const MAX_EXPIRES_IN = 2_592_000;
@@ -154,6 +155,7 @@ export class PixelVault implements INodeType {
 				noDataExpression: true,
 				options: [
 					{ name: 'Audio', value: 'audio' },
+					{ name: 'Custom Domain', value: 'customDomain' },
 					{ name: 'Image', value: 'image' },
 					{ name: 'Video', value: 'video' },
 				],
@@ -186,6 +188,40 @@ export class PixelVault implements INodeType {
 					},
 				],
 				default: 'upload',
+			},
+			{
+				displayName: 'Operation',
+				name: 'operation',
+				type: 'options',
+				noDataExpression: true,
+				displayOptions: { show: { resource: ['customDomain'] } },
+				options: [
+					{
+						name: 'Create Custom Domain',
+						value: 'createCustomDomain',
+						description: 'Attach a customer-owned hostname to the active project',
+						action: 'Create a custom domain',
+					},
+					{
+						name: 'Delete Custom Domain',
+						value: 'deleteCustomDomain',
+						description: 'Remove a custom domain; canonical PixelVault URLs keep working',
+						action: 'Delete a custom domain',
+					},
+					{
+						name: 'List Custom Domains',
+						value: 'listCustomDomains',
+						description: 'List domains, DNS records, readiness, and account plan capacity',
+						action: 'List custom domains',
+					},
+					{
+						name: 'Refresh Custom Domain',
+						value: 'refreshCustomDomain',
+						description: 'Re-check DNS and certificate state after records change',
+						action: 'Refresh a custom domain',
+					},
+				],
+				default: 'listCustomDomains',
 			},
 			{
 				displayName: 'Operation',
@@ -397,6 +433,28 @@ export class PixelVault implements INodeType {
 				description: 'Stable video asset ID. Reuse it to resume an asynchronous workflow.',
 			},
 			{
+				displayName: 'Hostname',
+				name: 'hostname',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'media.example.com',
+				displayOptions: { show: { operation: ['createCustomDomain'] } },
+				description: 'Customer-owned hostname to attach to the active project',
+			},
+			{
+				displayName: 'Custom Domain ID',
+				name: 'customDomainId',
+				type: 'string',
+				default: '',
+				required: true,
+				placeholder: 'dom_abc123',
+				displayOptions: {
+					show: { operation: ['refreshCustomDomain', 'deleteCustomDomain'] },
+				},
+				description: 'ID returned by List or Create Custom Domain',
+			},
+			{
 				displayName: 'Metadata (JSON)',
 				name: 'metadata',
 				type: 'json',
@@ -602,7 +660,24 @@ export class PixelVault implements INodeType {
 			try {
 				let requestOptions: IHttpRequestOptions;
 
-				if (operation === 'upload') {
+				if (operation === 'listCustomDomains') {
+					requestOptions = { method: 'GET', url: CUSTOM_DOMAINS_URL, json: true };
+				} else if (operation === 'createCustomDomain') {
+					const hostname = this.getNodeParameter('hostname', i) as string;
+					requestOptions = {
+						method: 'POST',
+						url: CUSTOM_DOMAINS_URL,
+						body: { hostname },
+						json: true,
+					};
+				} else if (operation === 'refreshCustomDomain' || operation === 'deleteCustomDomain') {
+					const domainId = this.getNodeParameter('customDomainId', i) as string;
+					const domainUrl = `${CUSTOM_DOMAINS_URL}/${encodeURIComponent(domainId)}`;
+					requestOptions =
+						operation === 'refreshCustomDomain'
+							? { method: 'POST', url: `${domainUrl}/refresh`, json: true }
+							: { method: 'DELETE', url: domainUrl, json: true };
+				} else if (operation === 'upload') {
 					const binaryPropertyName = this.getNodeParameter('binaryPropertyName', i) as string;
 					const binaryData = this.helpers.assertBinaryData(i, binaryPropertyName);
 					const buffer = await this.helpers.getBinaryDataBuffer(i, binaryPropertyName);
@@ -822,7 +897,9 @@ export class PixelVault implements INodeType {
 				};
 
 				let output: IDataObject;
-				if (operation === 'listVideos') {
+				if (operation === 'listCustomDomains') {
+					output = { custom_domains: parsed.data ?? [], meta: parsed.meta ?? {} };
+				} else if (operation === 'listVideos') {
 					output = { videos: parsed.data ?? [], meta: parsed.meta ?? {} };
 				} else if (operation === 'listAudio') {
 					output = { audio: parsed.data ?? [], meta: parsed.meta ?? {} };
