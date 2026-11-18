@@ -757,3 +757,46 @@ test('audio list, get, update, signing, and deletion use the REST contract', asy
 	assert.equal(remove.calls[0].options.method, 'DELETE');
 	assert.equal(deleted.json.success, true);
 });
+
+test('custom domains list capacity and manage encoded IDs', async () => {
+	const list = makeContext({
+		params: { operation: 'listCustomDomains' },
+		response: {
+			data: [{ id: 'dom_1', hostname: 'media.example.com', ready: true }],
+			meta: { limit: 1, total: 1, project_total: 1 },
+		},
+	});
+	const [[listed]] = await run(list);
+	assert.equal(list.calls[0].options.url, 'https://api.pixelvault.dev/v1/custom-domains');
+	assert.equal(listed.json.custom_domains[0].ready, true);
+	assert.equal(listed.json.meta.limit, 1);
+
+	const create = makeContext({
+		params: { operation: 'createCustomDomain', hostname: 'media.example.com' },
+		response: { data: { id: 'dom_1', hostname: 'media.example.com' } },
+	});
+	await run(create);
+	assert.equal(create.calls[0].options.method, 'POST');
+	assert.deepEqual(create.calls[0].options.body, { hostname: 'media.example.com' });
+
+	const refresh = makeContext({
+		params: { operation: 'refreshCustomDomain', customDomainId: 'dom/1' },
+		response: { data: { id: 'dom/1', ready: true } },
+	});
+	await run(refresh);
+	assert.equal(
+		refresh.calls[0].options.url,
+		'https://api.pixelvault.dev/v1/custom-domains/dom%2F1/refresh',
+	);
+
+	const remove = makeContext({
+		params: { operation: 'deleteCustomDomain', customDomainId: 'dom/1' },
+		response: { data: { id: 'dom/1', deleted: true } },
+	});
+	await run(remove);
+	assert.equal(remove.calls[0].options.method, 'DELETE');
+	assert.equal(
+		remove.calls[0].options.url,
+		'https://api.pixelvault.dev/v1/custom-domains/dom%2F1',
+	);
+});

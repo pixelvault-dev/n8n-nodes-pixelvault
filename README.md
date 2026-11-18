@@ -30,15 +30,17 @@ Follow the [community nodes installation guide](https://docs.n8n.io/integrations
 | **Upload Audio** / **Import Audio From URL** | Hosts original MP3, PCM/float WAV, AAC M4A, or Opus/Vorbis OGG with byte validation, privacy, TTL, metadata, folder, collection, and retry safety. |
 | **Enrich Audio** | Starts or resumes transcription. Return stable asset/job IDs immediately or poll with bounded backoff for text, WebVTT, and timestamped JSON. |
 | **Get Audio Status and Artifacts** / **List Audio** / **Update Audio** / **Sign Audio URLs** / **Delete Audio** | Resumes, discovers, and manages audio plus transcript lifecycle by stable `aud_` ID. Private links never fall back to public. |
+| **List Custom Domains** / **Create Custom Domain** / **Refresh Custom Domain** / **Delete Custom Domain** | Manages customer-owned hostnames on the active project and returns DNS records, readiness, and account plan capacity. |
 
 Image, video, and audio uploads accept folder, public/private visibility, deletion TTL, and custom metadata. Video
 and audio uploads also accept collection membership, an idempotency key, and private URL expiry.
 
-The output is the API object. Images expose fields such as `url`, `id`, `mime_type`, `size`, and `filename`.
-Videos expose `id`, `original_url`, `social_optimization`, and `enrichment`; transcript/storyboard URLs appear
-only after those artifacts exist. Audio exposes `id`, `original_url`, detected container/codec, duration, sample
-rate, channels, `enrichment.job_id`, status, and only transcript URLs that exist. Private URLs are signed and expire
-independently from asset deletion.
+The output is the API object. Media responses retain canonical `url` and include optional `branded_url` when the
+active project has a ready custom domain; signed and transform query parameters are preserved. Images expose fields
+such as `url`, `id`, `mime_type`, `size`, and `filename`. Videos expose `id`, `original_url`,
+`social_optimization`, and `enrichment`; transcript/storyboard URLs appear only after those artifacts exist. Audio
+exposes `id`, `original_url`, detected container/codec, duration, sample rate, channels, `enrichment.job_id`, status,
+and only transcript URLs that exist. Private URLs are signed and expire independently from asset deletion.
 
 ## Credentials
 
